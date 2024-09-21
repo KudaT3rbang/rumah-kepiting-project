@@ -8,13 +8,13 @@
 #include <BlynkSimpleEsp8266.h>
 
 // Define Temperature Sensors
-#define ONE_WIRE_BUS 4
+#define ONE_WIRE_BUS 2 // DS18B20 Sensors is located in GPIO2 (D4)
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
 // Connect To Wifi
-char ssid[] = "WIFI_SSID";
-char pass[] = "WIFI_PASSWORD";
+char ssid[] = "YOUR_SSID";
+char pass[] = "YOUR_PASSWORD";
 
 // Define Blynk
 BlynkTimer timer;

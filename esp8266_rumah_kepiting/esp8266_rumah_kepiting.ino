@@ -1,23 +1,23 @@
-// Blynk
 #define BLYNK_TEMPLATE_ID "TEMPLATE_ID"
 #define BLYNK_TEMPLATE_NAME "TEMPLATE_NAME"
 #define BLYNK_AUTH_TOKEN "AUTH_TOKEN"
 
 #include <OneWire.h>
-#include <DallasTemperature.h> // Temperature Sensors Library
-#include <ESP8266WiFi.h> // Library to connect to Wifi
-#include <BlynkSimpleEsp8266.h> // Blynk Library for ESP8266
-#include <U8g2lib.h> // Library for OLED Display (SH1106)
+#include <DallasTemperature.h>
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <U8g2lib.h>
 
 // TDS Sensor
 #define TdsSensorPin A0
 #define VREF 3.3
-#define SCOUNT  30 
+#define SCOUNT 30
 int analogBuffer[SCOUNT];
+int analogBufferTemp[SCOUNT];
 int analogBufferIndex = 0;
 
 // Temperature Sensors
-#define ONE_WIRE_BUS 2 // DS18B20 Sensors is located in GPIO2 (D4)
+#define ONE_WIRE_BUS 2
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature temperatureSensor(&oneWire);
 
@@ -30,104 +30,116 @@ static const unsigned char image_weather_temperature_bits[] U8X8_PROGMEM = {0x38
 static const unsigned char image_weather_humidity_bits[] U8X8_PROGMEM = {0x20,0x00,0x20,0x00,0x30,0x00,0x70,0x00,0x78,0x00,0xf8,0x00,0xfc,0x01,
 0xfc,0x01,0x7e,0x03,0xfe,0x02,0xff,0x06,0xff,0x07,0xfe,0x03,0xfe,0x03,0xfc,0x01,0xf0,0x00};
 
-// Connect To Wifi
+// Connect to WiFi
 char ssid[] = "YOUR_SSID";
 char pass[] = "YOUR_PASSWORD";
 
-// Define Blynk Timer
+// Blynk Timer
 BlynkTimer timer;
+
+float temperatureC = 0;  // Temperature for compensation and display
+float averageVoltage = 0;
+float tdsValue = 0;
 
 // Function to calculate the median value (TDS)
 int getMedianNum(int bArray[], int iFilterLen) {
-  std::sort(bArray, bArray + iFilterLen); // Sort the array
+  int bTab[iFilterLen];
+  for (byte i = 0; i < iFilterLen; i++)
+    bTab[i] = bArray[i];
+  // Sort the array for median calculation
+  for (int j = 0; j < iFilterLen - 1; j++) {
+    for (int i = 0; i < iFilterLen - j - 1; i++) {
+      if (bTab[i] > bTab[i + 1]) {
+        int bTemp = bTab[i];
+        bTab[i] = bTab[i + 1];
+        bTab[i + 1] = bTemp;
+      }
+    }
+  }
+  // Return the median value
   if (iFilterLen % 2 == 0) {
-    return (bArray[iFilterLen / 2] + bArray[iFilterLen / 2 - 1]) / 2;
+    return (bTab[iFilterLen / 2] + bTab[iFilterLen / 2 - 1]) / 2;
   } else {
-    return bArray[iFilterLen / 2];
+    return bTab[iFilterLen / 2];
   }
 }
 
-// Function to calculating TDS value (TDS)
-float readTds() {
-  // Ensure we are using the latest temperature from the sensor
-  temperatureSensor.requestTemperatures(); 
-  float temperature = temperatureSensor.getTempCByIndex(0);  // Update the temperature from DS18B20 sensor
-
-  int medianValue = getMedianNum(analogBuffer, SCOUNT);
-  float averageVoltage = medianValue * (float)VREF / 1024.0;
-  float compensationCoefficient = 1.0 + 0.02 * (temperature - 25.0);  // temperature compensation using sensor value
-  float compensationVoltage = averageVoltage / compensationCoefficient;
-  float tdsValue = (133.42 * pow(compensationVoltage, 3) - 255.86 * pow(compensationVoltage, 2) + 857.39 * compensationVoltage) * 0.5;
-
-  Blynk.virtualWrite(V1, tdsValue);  // Send TDS value to Blynk on Virtual Pin V1
-  return tdsValue; // Return the TDS value
-}
-
-// Reading analog value (TDS)
-void readTdsAnalogSensor() {
+void readTds() {
   static unsigned long analogSampleTimepoint = millis();
-  if (millis() - analogSampleTimepoint > 40U) {  // Every 40 milliseconds, read the analog value
+  if (millis() - analogSampleTimepoint > 40U) {
     analogSampleTimepoint = millis();
-    analogBuffer[analogBufferIndex] = analogRead(TdsSensorPin);  // Read the analog value and store into the buffer
-    analogBufferIndex = (analogBufferIndex + 1) % SCOUNT;  // Increment index and wrap around
+    analogBuffer[analogBufferIndex] = analogRead(TdsSensorPin);
+    analogBufferIndex++;
+    if (analogBufferIndex == SCOUNT) {
+      analogBufferIndex = 0;
+    }
   }
 }
 
-// Getting temperature data from temperature sensors (Temperature)
+float calculateTDS() {
+  // Copy buffer for processing
+  for (int i = 0; i < SCOUNT; i++) {
+    analogBufferTemp[i] = analogBuffer[i];
+  }
+  averageVoltage = getMedianNum(analogBufferTemp, SCOUNT) * (float)VREF / 1024.0;
+
+  // Use actual temperature from sensor for compensation
+  float compensationCoefficient = 1.0 + 0.02 * (temperatureC - 25.0);
+  float compensationVoltage = averageVoltage / compensationCoefficient;
+
+  tdsValue = (133.42 * compensationVoltage * compensationVoltage * compensationVoltage
+              - 255.86 * compensationVoltage * compensationVoltage
+              + 857.39 * compensationVoltage) * 0.5;
+  Blynk.virtualWrite(V1, tdsValue);  // Send TDS value to Blynk
+  return tdsValue;
+}
+
 void sendTempDataTimer() {
-  temperatureSensor.requestTemperatures(); 
-  float temperatureC = temperatureSensor.getTempCByIndex(0); // Get temperature data from sensors
-  Blynk.virtualWrite(V0, temperatureC);  // Send temperature to Blynk on Virtual Pin V0
+  temperatureSensor.requestTemperatures();
+  temperatureC = temperatureSensor.getTempCByIndex(0);  // Update global temperature variable
+  Blynk.virtualWrite(V0, temperatureC);
 }
 
-void showDataToDisplay() {
-    float temperatureNow = temperatureSensor.getTempCByIndex(0);
-    float tdsNow = readTds();
+void calculateAndDisplay() {
+  float tdsNow = calculateTDS();  
 
-    char temperatureStr[10];
-    char tdsStr[10];
+  char temperatureStr[10];
+  char tdsStr[10];
 
-    // Convert Float to String
-    dtostrf(temperatureNow, 4, 1, temperatureStr);
-    dtostrf(tdsNow, 4, 1, tdsStr);
+  dtostrf(temperatureC, 4, 1, temperatureStr);
+  dtostrf(tdsNow, 4, 1, tdsStr);
 
-    // Clear display buffer
-    oledDisplay.clearBuffer();
+  oledDisplay.clearBuffer();
+  oledDisplay.drawXBMP(10, 10, 16, 16, image_weather_temperature_bits);
+  oledDisplay.setFont(u8g2_font_profont17_tr);
+  oledDisplay.drawStr(35, 23, temperatureStr);
 
-    // Draw weather image and temperature value
-    oledDisplay.drawXBMP(10, 10, 16, 16, image_weather_temperature_bits);
-    oledDisplay.setFont(u8g2_font_profont17_tr);
-    oledDisplay.drawStr(35, 23, temperatureStr);
+  oledDisplay.drawXBMP(10, 39, 11, 16, image_weather_humidity_bits);
+  oledDisplay.drawStr(35, 53, tdsStr);
 
-    // Draw weather image and tds value
-    oledDisplay.drawXBMP(10, 39, 11, 16, image_weather_humidity_bits);
-    oledDisplay.drawStr(35, 53, tdsStr);
-
-    // Send to display
-    oledDisplay.sendBuffer();
-    delay(150);
+  oledDisplay.sendBuffer();
 }
+
 void setup(void) {
   Serial.begin(115200);
-  temperatureSensor.begin();
 
-  // OLED Display sensor init
   oledDisplay.begin();
   oledDisplay.setColorIndex(1);
   oledDisplay.setFontMode(1);
   oledDisplay.setBitmapMode(1);
+  oledDisplay.clearBuffer();
 
+  temperatureSensor.begin();
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
 
-  // Send temperature data to Blynk every 1s (1000ms)
+  timer.setInterval(1000L, calculateAndDisplay);
   timer.setInterval(1000L, sendTempDataTimer);
-  // Read TDS value every 1s (1000ms)
   timer.setInterval(1000L, readTds);
+
 }
 
 void loop(void) {
-  readTdsAnalogSensor();
-  showDataToDisplay();
+  readTds();
   Blynk.run();
-  timer.run();
+  timer.run(); 
 }

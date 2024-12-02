@@ -1,25 +1,17 @@
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
 
 float temperature = 0;
 float tds = 0;
+float dissolvedOxygen = 0; // Variable for Dissolved Oxygen
 String incomingString;
 
 // Replace with your network credentials
-char ssid[] = "rumah blimbing_4G";
-char password[] = "xinna321p";
+const char* ssid = "rumah blimbing_4G";
+const char* password = "xinna321p";
 
-// Set web server port number to 80
-WiFiServer server(80);
-
-// Variable to store the HTTP request
-String header;
-
-// Current time
-unsigned long currentTime = millis();
-// Previous time
-unsigned long previousTime = 0; 
-// Define timeout time in milliseconds (example: 2000ms = 2s)
-const long timeoutTime = 2000;
+// Replace with your server URL
+const char* serverUrl = "http://192.168.18.42:3000/data"; // Replace <SERVER_IP> with your server's IP
 
 void setup() {
   Serial.begin(115200);
@@ -32,83 +24,64 @@ void setup() {
     delay(500);
     Serial.print(".");
   }
-  
-  // Print local IP address and start web server
-  Serial.println("");
-  Serial.println("WiFi connected.");
+
+  // Print local IP address
+  Serial.println("\nWiFi connected.");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
-  server.begin();
 }
 
 void loop() {
   // Listen for incoming serial data
-  if (Serial.available() > 0) {  
+  if (Serial.available() > 0) {
     incomingString = Serial.readStringUntil('\n');
-    Serial.println(incomingString);
-    
-    // Parsing incomingString to extract temperature and TDS data
-    int commaIndex = incomingString.indexOf(',');
+    Serial.println("Received data: " + incomingString);
 
-    if (commaIndex != -1) {
-      String tempString = incomingString.substring(0, commaIndex);
-      String tdsString = incomingString.substring(commaIndex + 1);
+    // Parse the incoming string (e.g., "25.3,120.5,6.8")
+    int firstComma = incomingString.indexOf(',');
+    int secondComma = incomingString.indexOf(',', firstComma + 1);
 
+    if (firstComma != -1 && secondComma != -1) {
+      String tempString = incomingString.substring(0, firstComma);
+      String tdsString = incomingString.substring(firstComma + 1, secondComma);
+      String doString = incomingString.substring(secondComma + 1);
+
+      // Convert strings to float
       temperature = tempString.toFloat();
       tds = tdsString.toFloat();
+      dissolvedOxygen = doString.toFloat();
     }
   }
 
-  // Listen for incoming clients for the web server
-  WiFiClient client = server.available();
+  // Upload data to the server
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClient client;
+    HTTPClient http;
 
-  if (client) {
-    Serial.println("New Client.");
-    String currentLine = "";
-    currentTime = millis();
-    previousTime = currentTime;
+    http.begin(client, serverUrl);
+    http.addHeader("Content-Type", "application/json");
 
-    while (client.connected() && currentTime - previousTime <= timeoutTime) {
-      currentTime = millis();
-      if (client.available()) {
-        char c = client.read();
-        header += c;
+    // Create JSON payload
+    String payload = "{\"temperature\":" + String(temperature) + 
+                     ",\"tds\":" + String(tds) + 
+                     ",\"dissolvedOxygen\":" + String(dissolvedOxygen) + "}";
 
-        if (c == '\n') {
-          if (currentLine.length() == 0) {
-            // HTTP headers
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-type:text/html");
-            client.println("Connection: close");
-            client.println();
-            
-            // HTML content displaying the temperature and TDS
-            client.println("<!DOCTYPE html><html>");
-            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-            client.println("<link rel=\"icon\" href=\"data:,\">");
-            client.println("<style>html { font-family: Helvetica; text-align: center; margin: 0px auto;}</style></head>");
-            client.println("<body><h1>ESP8266 Data Monitoring</h1>");
+    // Send HTTP POST request
+    int httpResponseCode = http.POST(payload);
 
-            // Display the temperature and TDS data
-            client.println("<p>Temperature: " + String(temperature) + " &#8451;</p>");
-            client.println("<p>TDS: " + String(tds) + " ppm</p>");
-
-            client.println("</body></html>");
-            client.println();
-            break;
-          } else {
-            currentLine = "";
-          }
-        } else if (c != '\r') {
-          currentLine += c;
-        }
-      }
+    // Print the response
+    if (httpResponseCode > 0) {
+      Serial.println("POST Response code: " + String(httpResponseCode));
+      String response = http.getString();
+      Serial.println("Server response: " + response);
+    } else {
+      Serial.println("Error sending POST request: " + String(httpResponseCode));
     }
 
-    // Clear the header variable
-    header = "";
-    client.stop();
-    Serial.println("Client disconnected.");
+    http.end();
+  } else {
+    Serial.println("Wi-Fi not connected");
   }
-  delay(2000);
+
+  delay(20000);
 }
